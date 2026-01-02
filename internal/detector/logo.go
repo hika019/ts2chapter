@@ -38,29 +38,38 @@ const (
 
 // GenerateChaptersByLogo は tsファイルから1秒毎にフレーム抽出し、
 // 四隅ロゴの有無でCM区間を検出してチャプターを生成する。
-func GenerateChaptersByLogo(tsFile string) error {
+func GenerateChaptersByLogo(tsFile string, mainThreshold float32) error {
+	Logger.Println("ロゴ検出によるチャプター生成を開始します...")
 
-	if _, err := os.Stat(FrameDir); err != nil {
-		err := os.RemoveAll(FrameDir) // 既存のフレームディレクトリを削除
+	absFrameDir, err := filepath.Abs(FrameDir)
+	if err != nil {
+		return fmt.Errorf("resolve FrameDir path: %w", err)
+	}
+	Logger.Println("フレーム抽出ディレクトリ:", absFrameDir)
+
+	if _, err := os.Stat(absFrameDir); err != nil {
+		err := os.RemoveAll(absFrameDir) // 既存のフレームディレクトリを削除
 		if err != nil {
 			return fmt.Errorf("failed to remove frames dir: %w", err)
 		}
 	}
 
-	if err := os.MkdirAll(FrameDir, 0755); err != nil {
+	if err := os.MkdirAll(absFrameDir, 0755); err != nil {
 		return fmt.Errorf("failed to create frames dir: %w", err)
 	}
 
-	if err := captureFrames(tsFile, FrameDir); err != nil {
+	if err := captureFrames(tsFile, absFrameDir); err != nil {
 		return err
 	}
 
-	if err := edgeMask(FrameDir, EdgesDir); err != nil {
+	absEdgesDir, err := filepath.Abs(EdgesDir)
+	Logger.Println("エッジ検出ディレクトリ:", absEdgesDir)
+	if err := edgeMask(absFrameDir, absEdgesDir); err != nil {
 		return err
 	}
 
-	fmt.Println("四隅以外をマスク")
-	err := filepath.WalkDir(EdgesDir, func(path string, d fs.DirEntry, err error) error {
+	Logger.Println("四隅以外をマスク開始...")
+	err = filepath.WalkDir(absEdgesDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -76,19 +85,18 @@ func GenerateChaptersByLogo(tsFile string) error {
 		return fmt.Errorf("failed to process frames: %w", err)
 	}
 
-	edge_ave, err := averageImages(EdgesDir)
+	edge_ave, err := averageImages(absEdgesDir)
 	if err != nil {
 		return fmt.Errorf("failed to create average image: %w", err)
 	}
 
-	ret2 := gocv.Threshold(edge_ave, &edge_ave, 30, 255, gocv.ThresholdBinary)
-	fmt.Println("ロゴ推定画像の閾値処理完了")
-	fmt.Println("otsu:", ret2)
+	gocv.Threshold(edge_ave, &edge_ave, 30, 255, gocv.ThresholdBinary)
+	Logger.Println("ロゴ推定画像の閾値処理完了")
 
-	gocv.IMWrite(filepath.Join(EdgesDir, LogoEdgePath), edge_ave)
-	fmt.Printf("ロゴエッジ画像を書き出しました: %s\n", filepath.Join(EdgesDir, LogoEdgePath))
+	gocv.IMWrite(filepath.Join(absEdgesDir, LogoEdgePath), edge_ave)
+	Logger.Printf("ロゴエッジ画像を書き出しました: %s\n", filepath.Join(absEdgesDir, LogoEdgePath))
 
-	frames, err := judgeLogo(EdgesDir, edge_ave)
+	frames, err := judgeLogo(absEdgesDir, edge_ave, mainThreshold)
 	if err != nil {
 		return fmt.Errorf("failed to judge logo presence: %w", err)
 	}
@@ -157,12 +165,12 @@ func detectLogoByTemplate(
 		return false, 0, fmt.Errorf("logo edge has no pixels")
 	}
 
-	fmt.Printf("overlap: %d/%d ", overlap, logoPixels)
+	DebugLogger.Printf("overlap: %d/%d ", overlap, logoPixels)
 	score := float32(overlap) / float32(logoPixels)
 	return score >= threshold, score, nil
 }
 
-func judgeLogo(imageDir string, logoEdge gocv.Mat) ([]Frame, error) {
+func judgeLogo(imageDir string, logoEdge gocv.Mat, threshold float32) ([]Frame, error) {
 
 	frameInfos := make([]Frame, 0)
 	files, _ := filepath.Glob(filepath.Join(imageDir, "frame_*-edge.jpg"))
@@ -171,7 +179,7 @@ func judgeLogo(imageDir string, logoEdge gocv.Mat) ([]Frame, error) {
 	for i, path := range files {
 		frame := i + 1
 		edge := gocv.IMRead(path, gocv.IMReadGrayScale)
-		isLogo, score, err := detectLogoByTemplate(edge, logoEdge, 0.55)
+		isLogo, score, err := detectLogoByTemplate(edge, logoEdge, threshold)
 		edge.Close()
 		if err != nil {
 			return nil, fmt.Errorf("failed to process %s: %w", path, err)
@@ -182,7 +190,7 @@ func judgeLogo(imageDir string, logoEdge gocv.Mat) ([]Frame, error) {
 			isLogo: isLogo,
 		}
 		frameInfos = append(frameInfos, frameInfo)
-		fmt.Printf("ファイル: %s, ロゴ検出: %v, スコア: %.3f\n", path, isLogo, score)
+		DebugLogger.Printf("ファイル: %s, 本編検出: %v, スコア: %.3f\n", path, isLogo, score)
 
 	}
 	return frameInfos, nil
@@ -242,7 +250,7 @@ func edgeToMask(edge gocv.Mat, dest *gocv.Mat, pt_x int, pt_y int) error {
 
 // captureFrames ffmpegで1秒毎にJPEGフレーム抽出
 func captureFrames(tsFile, outDir string) error {
-	fmt.Println("フレーム抽出中...")
+	Logger.Println("フレーム抽出中...")
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-i", tsFile, "-vf", "fps=1", filepath.Join(outDir, "frame_%06d.jpg"))
 	return cmd.Run()
 }
@@ -251,7 +259,7 @@ func captureFrames(tsFile, outDir string) error {
 func maskImage(filepath string) error {
 	img := gocv.IMRead(filepath, gocv.IMReadGrayScale)
 	if img.Empty() {
-		fmt.Printf("Failed to read image: %s\n", filepath)
+		Logger.Printf("Failed to read image: %s\n", filepath)
 		return errors.New(fmt.Sprintf("Failed to read image: %s\n", filepath))
 	}
 	defer img.Close()
@@ -278,14 +286,14 @@ func maskImage(filepath string) error {
 
 	ok := gocv.IMWrite(filepath, img)
 	if !ok {
-		fmt.Printf("Failed to write image: %s\n", filepath)
+		Logger.Printf("Failed to write image: %s\n", filepath)
 		return errors.New(fmt.Sprintf("Failed to write image: %s\n", filepath))
 	}
 	return nil
 }
 
 func edgeMask(frameDir, edgesDir string) error {
-	fmt.Println("エッジ検出処理中...")
+	Logger.Println("エッジ検出処理中...")
 
 	if _, err := os.Stat(edgesDir); err == nil {
 		err := os.RemoveAll(edgesDir) // 既存のエッジディレクトリを削除
@@ -308,7 +316,7 @@ func edgeMask(frameDir, edgesDir string) error {
 
 			img := gocv.IMRead(path, gocv.IMReadColor)
 			if img.Empty() {
-				fmt.Println("Failed to read:", path)
+				Logger.Println("Failed to read:", path)
 				return nil
 			}
 			defer img.Close()
@@ -335,7 +343,7 @@ func edgeMask(frameDir, edgesDir string) error {
 			outPath := filepath.Join(edgesDir, base+"-edge"+ext)
 
 			if ok := gocv.IMWrite(outPath, edges); !ok {
-				fmt.Println("Failed to write:", outPath)
+				Logger.Println("Failed to write:", outPath)
 				return errors.New("failed to write edge image")
 			}
 		}
@@ -348,7 +356,7 @@ func edgeMask(frameDir, edgesDir string) error {
 // averageImages 指定ディレクトリ内のフレーム画像の平均画像を作成する。
 // 画像はグレースケールで読み込み、明るさの平均を算出。
 func averageImages(dir string) (gocv.Mat, error) {
-	fmt.Println("フレーム画像の平均を計算中...")
+	Logger.Println("フレーム画像の平均を計算中...")
 	files, err := filepath.Glob(filepath.Join(dir, "frame_*.jpg"))
 	if err != nil {
 		return gocv.NewMat(), fmt.Errorf("failed to list frames: %w", err)
@@ -360,7 +368,7 @@ func averageImages(dir string) (gocv.Mat, error) {
 	base := gocv.IMRead(files[0], gocv.IMReadGrayScale)
 	acc := gocv.NewMatWithSize(base.Rows(), base.Cols(), gocv.MatTypeCV64F)
 	defer acc.Close()
-	fmt.Println("フレーム画像の初期化完了:", base.Size())
+	Logger.Println("フレーム画像の初期化完了:", base.Size())
 	base.Close()
 
 	count := 0
@@ -371,7 +379,7 @@ func averageImages(dir string) (gocv.Mat, error) {
 		err := img.ConvertTo(&floatImg, gocv.MatTypeCV64F)
 		img.Close()
 		if err != nil {
-			fmt.Printf("画像変換エラー: %s, %v\n", file, err)
+			Logger.Printf("画像変換エラー: %s, %v\n", file, err)
 			return gocv.NewMat(), err
 		}
 
@@ -385,10 +393,10 @@ func averageImages(dir string) (gocv.Mat, error) {
 
 	ave := gocv.NewMatWithSize(acc.Rows(), acc.Cols(), gocv.MatTypeCV8U)
 	gocv.ConvertScaleAbs(acc, &ave, 1.0/float64(count), 0)
-	fmt.Println(ave.Size(), ave.Type())
+	Logger.Println(ave.Size(), ave.Type())
 
 	gocv.IMWrite(filepath.Join(dir, "average.jpg"), ave)
-	fmt.Printf("ロゴ推定画像を書き出しました: %s\n", filepath.Join(dir, "average.jpg"))
+	Logger.Printf("ロゴ推定画像を書き出しました: %s\n", filepath.Join(dir, "average.jpg"))
 
 	return ave, nil
 }
