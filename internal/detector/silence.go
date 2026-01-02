@@ -2,23 +2,15 @@ package detector
 
 import (
 	"bufio"
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 )
 
-type Chapter struct {
-	Time time.Duration
-	Name string
-}
-
-func GenerateChapters(tsFile string) error {
+func GenerateChaptersBySilence(tsFile string) error {
+	Logger.Println("無音区間を検出中...")
 	var chapters []Chapter
 
 	detected, err := detectSilences(tsFile)
@@ -30,6 +22,7 @@ func GenerateChapters(tsFile string) error {
 	return writeChapters(tsFile, chapters)
 }
 
+// ffmpeg を使って無音区間を検出
 func detectSilences(tsFile string) ([]time.Duration, error) {
 	cmd := exec.Command("ffmpeg", "-i", tsFile, "-af", "silencedetect=n=-70dB:d=0.5", "-f", "null", "-")
 	stderr, err := cmd.StderrPipe()
@@ -59,6 +52,8 @@ func detectSilences(tsFile string) ([]time.Duration, error) {
 
 	return times, nil
 }
+
+// 無音区間からチャプターを生成
 func generateChaptersFromSilences(silences []time.Duration) []Chapter {
 	sort.Slice(silences, func(i, j int) bool { return silences[i] < silences[j] })
 	if len(silences) == 0 {
@@ -93,30 +88,4 @@ func generateChaptersFromSilences(silences []time.Duration) []Chapter {
 		})
 	}
 	return chapters
-}
-
-func writeChapters(tsFile string, chapters []Chapter) error {
-	base := strings.TrimSuffix(tsFile, filepath.Ext(tsFile))
-	outFile := base + ".chapter.txt"
-	f, err := os.Create(outFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	for i, c := range chapters {
-		num := fmt.Sprintf("%02d", i+1)
-		fmt.Fprintf(f, "CHAPTER%s=%s\n", num, formatTime(c.Time))
-		fmt.Fprintf(f, "CHAPTER%sNAME=%s\n", num, c.Name)
-	}
-
-	return nil
-}
-
-func formatTime(d time.Duration) string {
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	s := int(d.Seconds()) % 60
-	ms := int(d.Milliseconds()) % 1000
-	return fmt.Sprintf("%02d:%02d:%02d.%03d", h, m, s, ms)
 }
