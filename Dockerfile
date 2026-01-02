@@ -1,4 +1,5 @@
-FROM golang:1.25.5
+FROM golang:1.25.5-bookworm
+
 
 # 必要なパッケージのインストール
 RUN apt update && \
@@ -15,7 +16,7 @@ RUN apt install -y \
     unzip wget
 
 # OpenCV のビルドに必要なバージョンを定義
-ENV OPENCV_VERSION=4.12.0
+ENV OPENCV_VERSION=4.13.0
 
 # OpenCV ソースのダウンロードとビルド
 RUN mkdir /opencv && cd /opencv && \
