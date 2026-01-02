@@ -10,7 +10,7 @@ import (
 )
 
 var logoCmd = &cobra.Command{
-	Use:   "logo-detect [TSファイル]",
+	Use:   "logo [TSファイル]",
 	Short: "放送局のロゴの有無を元にチャプターを生成（CM検出）",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
